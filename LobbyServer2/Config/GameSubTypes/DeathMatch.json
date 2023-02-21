@@ -1,5 +1,5 @@
 {
-  "LocalizedName": "1v1PvP@SubTypes",
+  "LocalizedName": "Deathmatch@SubTypes",
   "GameMapConfigs": [
     {
       "Map": "Skyway_Deathmatch",
@@ -31,7 +31,7 @@
     }
   ],
   "TeamAPlayers": 1,
-  "TeamBPlayers": 1,
+  "TeamBPlayers": 0,
   "TeamABots": 0,
   "TeamBBots": 0,
   "TeamComposition": {
@@ -53,12 +53,12 @@
     }
   },
   "RewardBucket": "NoRewards",
-  "PersistedStatBucket": "DoNotPersist",
+  "PersistedStatBucket": "Deathmatch_Unranked",
   "Mods": [
     "AllowPlayingLockedCharacters",
     "HumansHaveFirstSlots"
   ],
   "GameOverrides": {
-	  "TurnTimeSpan": "00:00:20"
+    "TurnTimeSpan": "00:00:20"
   }
 }

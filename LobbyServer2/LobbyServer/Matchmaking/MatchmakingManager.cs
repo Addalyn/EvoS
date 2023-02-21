@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using CentralServer.BridgeServer;
 using CentralServer.LobbyServer.Character;
 using CentralServer.LobbyServer.Gamemode;
@@ -158,7 +159,7 @@ namespace CentralServer.LobbyServer.Matchmaking
             teamInfo.TeamPlayerInfo[2].TeamId = Team.TeamB;
             teamInfo.TeamPlayerInfo[2].PlayerId = 3;
 
-            BridgeServerProtocol server = ServerManager.GetServer(practiceGameInfo, teamInfo);
+            BridgeServerProtocol server = ServerManager.GetServer();
             if (server == null)
             {
                 log.Warn("No available server for practice gamemode");
@@ -181,6 +182,8 @@ namespace CentralServer.LobbyServer.Matchmaking
 
                 client.Send(notification1);
 
+                server.StartGame(practiceGameInfo, teamInfo);
+
                 practiceGameInfo.GameStatus = GameStatus.Launched;
                 GameInfoNotification notification2 = new GameInfoNotification()
                 {
@@ -193,7 +196,7 @@ namespace CentralServer.LobbyServer.Matchmaking
             }
         }
 
-        public static void StartGame(List<long> teamA, List<long> teamB, GameType gameType, GameSubType gameSubType)
+        public static async Task StartGameAsync(List<long> teamA, List<long> teamB, GameType gameType, GameSubType gameSubType)
         {
             log.Info($"Starting {gameType} game...");
             MatchmakingQueueConfig queueConfig = new MatchmakingQueueConfig();
@@ -240,6 +243,8 @@ namespace CentralServer.LobbyServer.Matchmaking
             {
                 AcceptedPlayers = clients.Count,
                 AcceptTimeout = new TimeSpan(0, 0, 0),
+                //SelectTimeout = TimeSpan.FromSeconds(30),
+                LoadoutSelectTimeout = TimeSpan.FromSeconds(30),
                 ActiveHumanPlayers = clients.Count,
                 ActivePlayers = clients.Count,
                 CreateTimestamp = DateTime.Now.Ticks,
@@ -261,8 +266,8 @@ namespace CentralServer.LobbyServer.Matchmaking
                     TeamBPlayers = teamInfo.TeamBPlayerInfo.Count(),
                 }
             };
-
-            BridgeServerProtocol server = ServerManager.GetServer(gameInfo, teamInfo);
+            
+            BridgeServerProtocol server = ServerManager.GetServer();
             if (server == null)
             {
                 log.Info($"No available server for {gameType} gamemode");
@@ -273,7 +278,7 @@ namespace CentralServer.LobbyServer.Matchmaking
                 server.clients = clients;
                 gameInfo.GameServerAddress = server.URI;
                 gameInfo.GameServerProcessCode = server.ProcessCode;
-                gameInfo.GameStatus = GameStatus.Launching;
+                gameInfo.GameStatus = GameStatus.Assembling;
 
                 for (int i = 0; i < clients.Count; i++)
                 {
@@ -289,6 +294,50 @@ namespace CentralServer.LobbyServer.Matchmaking
                     };
 
                     client.Send(notification);
+
+                }
+
+                gameInfo.GameStatus = GameStatus.LoadoutSelecting;
+
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    LobbyServerProtocolBase client = clients[i];
+                    GameInfoNotification notification = new GameInfoNotification()
+                    {
+
+                        TeamInfo = LobbyTeamInfo.FromServer(teamInfo, 0, queueConfig),
+                        GameInfo = gameInfo,
+                        PlayerInfo = LobbyPlayerInfo.FromServer(teamInfo.TeamPlayerInfo[i], 0, queueConfig)
+                    };
+
+                    client.Send(notification);
+                }
+
+                await Task.Delay(gameInfo.LoadoutSelectTimeout);
+
+                gameInfo.GameStatus = GameStatus.Launching;
+
+                //Update teamInfo with new mods catas skins vfx
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    teamInfo.TeamPlayerInfo[i].CharacterInfo = LobbyPlayerInfo.FromServer(teamInfo.TeamPlayerInfo[i], 0, queueConfig).CharacterInfo;
+                }
+
+                // We are ready to start the game
+                server.StartGame(gameInfo, teamInfo);
+
+                for (int i = 0; i < clients.Count; i++)
+                {
+                    LobbyServerProtocol client = clients[i];
+                    GameInfoNotification notification1 = new GameInfoNotification()
+                    {
+
+                        TeamInfo = LobbyTeamInfo.FromServer(teamInfo, 0, queueConfig),
+                        GameInfo = gameInfo,
+                        PlayerInfo = LobbyPlayerInfo.FromServer(teamInfo.TeamPlayerInfo[i], 0, queueConfig)
+                    };
+
+                    client.Send(notification1);
                     client.CurrentServer = server;
                 }
 
@@ -306,7 +355,7 @@ namespace CentralServer.LobbyServer.Matchmaking
 
                     client.Send(notification);
                 }
-
+                
                 clients.ForEach(c => c.OnStartGame(server));
 
                 log.Info($"Game {gameType} started");
@@ -361,7 +410,7 @@ namespace CentralServer.LobbyServer.Matchmaking
                 teamInfo.TeamPlayerInfo.Add(playerInfo);
             }
 
-            BridgeServerProtocol server = ServerManager.GetServer(gameInfo, teamInfo);
+            BridgeServerProtocol server = ServerManager.GetServer();
             if (server == null)
             {
                 log.Warn("No available server for practice gamemode");
@@ -371,6 +420,8 @@ namespace CentralServer.LobbyServer.Matchmaking
                 gameInfo.GameServerAddress = server.URI;
                 gameInfo.GameServerProcessCode = server.ProcessCode;
                 gameInfo.GameStatus = GameStatus.Launching;
+
+                server.StartGame(gameInfo, teamInfo);
 
                 for (int i = 0; i < clients.Count; i++)
                 {

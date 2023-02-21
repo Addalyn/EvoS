@@ -13,7 +13,7 @@ namespace CentralServer.LobbyServer.Gamemode
         private const string ConfigPath = @"Config/GameSubTypes/";
         private static readonly Dictionary<GameType, string> ConfigFiles = new Dictionary<GameType, string>()
         {
-            { GameType.PvP, "1v1PvP.json" }
+            { GameType.PvP, "DeathMatch.json" }
         };
         
         public static Dictionary<GameType, GameTypeAvailability> GetGameTypeAvailabilities()
@@ -106,7 +106,7 @@ namespace CentralServer.LobbyServer.Gamemode
         {
             GameTypeAvailability type = new GameTypeAvailability();
             type.IsActive = LobbyConfiguration.GetGameTypePvPAvailable();
-            type.MaxWillFillPerTeam = 0;
+            type.MaxWillFillPerTeam = LobbyConfiguration.GetMaxGroupSize();
             type.SubTypes = new List<GameSubType>()
             {
                 LoadGameSubType(ConfigFiles[GameType.PvP])
