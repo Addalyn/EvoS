@@ -39,6 +39,10 @@ public class CustomGame : Game
             AcceptTimeout = new TimeSpan(0, 0, 0),
             SelectTimeout = TimeSpan.FromSeconds(30),
             LoadoutSelectTimeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseBan1Timeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseBan2Timeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseFreelancerSelectTimeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseTradeTimeout = TimeSpan.FromSeconds(30),
             ActiveHumanPlayers = GroupManager.GetPlayerGroup(accountId).Members.Count,
             ActivePlayers = GroupManager.GetPlayerGroup(accountId).Members.Count,
             CreateTimestamp = DateTime.UtcNow.Ticks,
@@ -514,6 +518,9 @@ public class CustomGame : Game
         // Assign players to game
         SetGameStatus(GameStatus.FreelancerSelecting);
         GetClients().ForEach(client => SendGameAssignmentNotification(client));
+
+        // Set up Ranked Resolution Phase if applicable
+        await HandleRankedResolutionPhase();
 
         SetGameStatus(GameStatus.LoadoutSelecting);
 

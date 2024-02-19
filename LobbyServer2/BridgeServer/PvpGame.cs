@@ -37,6 +37,9 @@ public class PvpGame: Game
         SetGameStatus(GameStatus.FreelancerSelecting);
         GetClients().ForEach(client => SendGameAssignmentNotification(client));
 
+        // Set up Ranked Resolution Phase if applicable
+        await HandleRankedResolutionPhase();
+
         // Check for duplicated and WillFill characters
         if (CheckDuplicatedAndFill())
         {
@@ -125,6 +128,10 @@ public class PvpGame: Game
             AcceptTimeout = new TimeSpan(0, 0, 0),
             SelectTimeout = TimeSpan.FromSeconds(30),
             LoadoutSelectTimeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseBan1Timeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseBan2Timeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseFreelancerSelectTimeout = TimeSpan.FromSeconds(30),
+            SelectSubPhaseTradeTimeout = TimeSpan.FromSeconds(30),
             ActiveHumanPlayers = TeamInfo.TeamPlayerInfo.Count(p => p.IsHumanControlled),
             ActivePlayers = TeamInfo.TeamPlayerInfo.Count,
             CreateTimestamp = DateTime.UtcNow.Ticks,

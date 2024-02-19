@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
 using CentralServer.LobbyServer;
@@ -17,6 +18,7 @@ using EvoS.Framework.Misc;
 using EvoS.Framework.Network.NetworkMessages;
 using EvoS.Framework.Network.Static;
 using log4net;
+using Org.BouncyCastle.Asn1.Ocsp;
 
 namespace CentralServer.BridgeServer;
 
@@ -24,10 +26,17 @@ public abstract class Game
 {
     private static readonly ILog log = LogManager.GetLogger(typeof(Game));
     public static readonly object characterSelectionLock = new object();
-    
+
     public LobbyGameInfo GameInfo { protected set; get; } // TODO check it is set when needed
     public LobbyServerTeamInfo TeamInfo { protected set; get; } = new LobbyServerTeamInfo() { TeamPlayerInfo = new List<LobbyServerPlayerInfo>() };
-    
+
+    public RankedResolutionPhaseData RankedResolutionPhaseData { get; protected set; }
+    public FreelancerResolutionPhaseSubType PhaseSubType { get; protected set; }
+
+    private bool isCancellationRequested = false;
+
+    public TimeSpan TimeLeftInSubPhase { get; protected set; }
+
     public ServerGameMetrics GameMetrics { get; private set; } = new ServerGameMetrics();
     public LobbyGameSummary GameSummary { get; private set; }
     public DateTime StopTime { private set; get; }
@@ -46,7 +55,7 @@ public abstract class Game
             Server.OnPlayerDisconnect -= OnPlayerDisconnect;
             Server.OnServerDisconnect -= OnServerDisconnect;
         }
-        
+
         Server = server;
         // TODO clear on destroy
         if (Server is not null)
@@ -57,7 +66,7 @@ public abstract class Game
             Server.OnPlayerDisconnect += OnPlayerDisconnect;
             Server.OnServerDisconnect += OnServerDisconnect;
         }
-        
+
         log.Info($"{GetType().Name} {LobbyServerUtils.GameIdString(GameInfo)} is assigned to server {Server?.Name}");
     }
 
@@ -65,7 +74,7 @@ public abstract class Game
     {
         Server?.DisconnectPlayer(GetPlayerInfo(accountId));
     }
-    
+
     protected void OnGameEnded(BridgeServerProtocol server, LobbyGameSummary summary, LobbyGameSummaryOverrides overrides)
     {
         GameInfo.GameResult = summary?.GameResult ?? GameResult.TieGame;
@@ -96,7 +105,7 @@ public abstract class Game
 
         _ = FinalizeGame();
     }
-    
+
     protected void OnStatusUpdate(BridgeServerProtocol server, GameStatus newStatus)
     {
         log.Info($"Game {GameInfo?.Name} {newStatus}");
@@ -153,21 +162,21 @@ public abstract class Game
         {
             lobbyPlayerInfo.ReplacedWithBots = true;
         }
-            
+
         QueuePenaltyManager.IssueQueuePenalties(playerInfo.AccountId, this);
     }
 
     protected async void OnServerDisconnect(BridgeServerProtocol server)
     {
         QueuePenaltyManager.CapQueuePenalties(this);
-        
+
         await Task.Delay(LobbyConfiguration.GetServerReconnectionTimeout());
         if (Server == server && GameStatus != GameStatus.Stopped)
         {
             OnGameEnded(server, null, null);
         }
     }
-    
+
     protected void StartGame()
     {
         GameInfo.GameStatus = GameStatus.Assembling;
@@ -200,7 +209,7 @@ public abstract class Game
         }
         lobbyServerPlayerInfo.CharacterInfo = characterInfo;
     }
-    
+
     // TODO there can be multiple
     public LobbyServerPlayerInfo GetPlayerInfo(long accountId)
     {
@@ -466,7 +475,7 @@ public abstract class Game
             // SendGameInfoNotifications(); // moved down
             DiscordManager.Get().SendGameReport(GameInfo, Server?.Name, Server?.BuildVersion, GameSummary);
             DiscordManager.Get().SendAdminGameReport(GameInfo, Server?.Name, Server?.BuildVersion, GameSummary);
-        
+
             //Wait a bit so people can look at stuff but we do have to send it so server can restart
             await Task.Delay(LobbyConfiguration.GetServerShutdownTime());
         }
@@ -770,7 +779,7 @@ public abstract class Game
             log.Error($"Cannot reconnect player {LobbyServerUtils.GetHandle(conn.AccountId)} to {ProcessCode}");
             return false;
         }
-            
+
         conn.JoinGame(this);
         playerInfo.ReplacedWithBots = false;
         SendGameAssignmentNotification(conn, true);
@@ -779,5 +788,215 @@ public abstract class Game
         Server.StartGameForReconnection(conn.AccountId);
 
         return true;
+    }
+
+    public async Task HandleRankedResolutionPhase()
+    {
+        if (GameInfo.GameConfig.SubTypes.Any(s => s.Mods.Contains(GameSubType.SubTypeMods.RankedFreelancerSelection)))
+        {
+            RankedResolutionPhaseData = new RankedResolutionPhaseData()
+            {
+                TimeLeftInSubPhase = new TimeSpan(),
+                UnselectedPlayerStates = TeamInfo.TeamPlayerInfo.Select(p => new RankedResolutionPlayerState()
+                {
+                    PlayerId = p.PlayerId,
+                    Intention = CharacterType.None,
+                    OnDeckness = RankedResolutionPlayerState.ReadyState.Unselected,
+                }).ToList(),
+                PlayersOnDeck = new(),
+                FriendlyBans = new List<CharacterType>(),
+                EnemyBans = new List<CharacterType>(),
+                FriendlyTeamSelections = new Dictionary<int, CharacterType>(),
+                EnemyTeamSelections = new Dictionary<int, CharacterType>(),
+                TradeActions = new List<RankedTradeData>(),
+                PlayerIdByImporance = TeamInfo.TeamPlayerInfo.Select(p => p.PlayerId).ToList(),
+            };
+
+            List<FreelancerResolutionPhaseSubType> phases = new()
+            {
+                FreelancerResolutionPhaseSubType.PICK_BANS1, // TeamA
+                FreelancerResolutionPhaseSubType.PICK_BANS1, // TeamB
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER1, // TeamA
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER2, // TeamB * 2
+                // FreelancerResolutionPhaseSubType.PICK_BANS1, // TeamA
+                // FreelancerResolutionPhaseSubType.PICK_BANS1, // TeamB
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER2, // TeamA * 2
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER1, // TeamB
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER1, // TeamA
+                FreelancerResolutionPhaseSubType.PICK_FREELANCER1, // TeamB
+                FreelancerResolutionPhaseSubType.FREELANCER_TRADE,
+            };
+
+            Team currentTeam = Team.TeamA;
+
+            foreach (FreelancerResolutionPhaseSubType subPhase in phases)
+            {
+                PhaseSubType = subPhase;
+                SendRankedResolutionSubPhase();
+                await HandleRankedResolutionSubPhase(subPhase, currentTeam);
+                currentTeam = ToggleTeam(currentTeam);
+            }
+        }
+    }
+
+    private static Team ToggleTeam(Team currentTeam)
+    {
+        return currentTeam == Team.TeamA ? Team.TeamB : Team.TeamA;
+    }
+
+
+    private async Task HandleRankedResolutionSubPhase(FreelancerResolutionPhaseSubType subPhase, Team currentTeam)
+    {
+
+        RankedResolutionPhaseData pickPhaseData = RankedResolutionPhaseData;
+        isCancellationRequested = false;
+        log.Info($"Starting ranked resolution sub phase {subPhase} for Team {currentTeam}");
+
+        if (subPhase == FreelancerResolutionPhaseSubType.PICK_BANS1 || subPhase == FreelancerResolutionPhaseSubType.PICK_BANS2)
+        {
+            // TODO: Handle if this doesnt work for some reason kick players and reset game try catch?
+            List<RankedResolutionPlayerState> unselectedPlayerStates = pickPhaseData.UnselectedPlayerStates;
+            long accountId = GetPlayers(currentTeam).First();
+
+            if (accountId != 0)
+            {
+                LobbyServerPlayerInfo playerInfo = GetPlayerInfo(accountId);
+
+                if (playerInfo != null)
+                {
+                    int playerId = playerInfo.PlayerId;
+                    RankedResolutionPlayerState playerToUpdate = unselectedPlayerStates.First(p => p.PlayerId == playerId);
+                    if (playerToUpdate.PlayerId == playerId)
+                    {
+                        pickPhaseData.PlayersOnDeck = new List<RankedResolutionPlayerState>() {
+                            new()
+                            {
+                                PlayerId = playerToUpdate.PlayerId,
+                                Intention = playerToUpdate.Intention,
+                                OnDeckness = RankedResolutionPlayerState.ReadyState.Selected
+                            }
+                        };
+                    }
+                }
+            }
+        }
+
+
+        if (subPhase == FreelancerResolutionPhaseSubType.PICK_FREELANCER1 || subPhase == FreelancerResolutionPhaseSubType.PICK_FREELANCER2)
+        {
+            List<RankedResolutionPlayerState> unselectedPlayerStates = pickPhaseData.UnselectedPlayerStates;
+            pickPhaseData.PlayersOnDeck = new List<RankedResolutionPlayerState>();
+            int count = subPhase == FreelancerResolutionPhaseSubType.PICK_FREELANCER1 ? 1 : 2;
+            for (int i = 0; i < count; i++)
+            {
+                List<long> accounts = GetPlayers(currentTeam).ToList();
+                long accountId = accounts.FirstOrDefault(a => unselectedPlayerStates.Any(p => p.PlayerId == GetPlayerInfo(a).PlayerId));
+
+                log.Info($"Picking player {accountId} for team {currentTeam}");
+
+                if (accountId != 0)
+                {
+                    LobbyServerPlayerInfo playerInfo = GetPlayerInfo(accountId);
+
+                    if (playerInfo != null)
+                    {
+                        int playerId = playerInfo.PlayerId;
+                        RankedResolutionPlayerState playerToUpdate = unselectedPlayerStates.FirstOrDefault(p => p.PlayerId == playerId);
+                        log.Info($"Player {playerId} {playerToUpdate.PlayerId} is on deck {playerToUpdate.Intention}");
+
+                        if (playerToUpdate.PlayerId == playerId)
+                        {
+                            pickPhaseData.PlayersOnDeck.Add(new RankedResolutionPlayerState
+                            {
+                                PlayerId = playerToUpdate.PlayerId,
+                                Intention = playerToUpdate.Intention,
+                                OnDeckness = RankedResolutionPlayerState.ReadyState.Selected
+                            });
+
+                        }
+                    }
+                }
+            }
+        }
+
+
+
+        switch (subPhase)
+        {
+            case FreelancerResolutionPhaseSubType.PICK_BANS1:
+                pickPhaseData.TimeLeftInSubPhase = GameInfo.SelectSubPhaseBan1Timeout;
+                break;
+            case FreelancerResolutionPhaseSubType.PICK_BANS2:
+                pickPhaseData.TimeLeftInSubPhase = GameInfo.SelectSubPhaseBan2Timeout;
+                break;
+            case FreelancerResolutionPhaseSubType.PICK_FREELANCER1:
+            case FreelancerResolutionPhaseSubType.PICK_FREELANCER2:
+                pickPhaseData.TimeLeftInSubPhase = GameInfo.SelectSubPhaseFreelancerSelectTimeout;
+                break;
+            case FreelancerResolutionPhaseSubType.FREELANCER_TRADE:
+                pickPhaseData.TimeLeftInSubPhase = GameInfo.SelectSubPhaseTradeTimeout;
+                break;
+        }
+
+        RankedResolutionPhaseData = pickPhaseData;
+        TimeLeftInSubPhase = pickPhaseData.TimeLeftInSubPhase;
+        SendRankedResolutionSubPhase();
+
+        Stopwatch stopwatch = new();
+        stopwatch.Start();
+
+        // Manually check for cancellation in a loop
+        while (stopwatch.Elapsed < pickPhaseData.TimeLeftInSubPhase)
+        {
+            if (isCancellationRequested)
+            {
+                return;
+            }
+
+            // Update TimeLeftInSubPhase based on elapsed time
+            TimeLeftInSubPhase = pickPhaseData.TimeLeftInSubPhase - stopwatch.Elapsed;
+
+            await Task.Delay(100);
+        }
+
+        stopwatch.Stop();
+    }
+
+    public void SkipRankedResolutionSubPhase()
+    {
+        // Set the cancellation flag to true
+        isCancellationRequested = true;
+    }
+
+    public void SetRankedResolutionPhaseData(RankedResolutionPhaseData rankedResolutionPhaseData)
+    {
+        RankedResolutionPhaseData = rankedResolutionPhaseData;
+    }
+
+    public RankedResolutionPhaseData GetRankedResolutionPhaseData()
+    {
+        return RankedResolutionPhaseData;
+    }
+
+    public FreelancerResolutionPhaseSubType GetRankedResolutionPhaseSubType()
+    {
+        return PhaseSubType;
+    }
+
+    public void SendRankedResolutionSubPhase()
+    {
+
+        RankedResolutionPhaseData rankedResolutionPhaseData = GetRankedResolutionPhaseData();
+        rankedResolutionPhaseData.TimeLeftInSubPhase = TimeLeftInSubPhase;
+        RankedResolutionPhaseData = rankedResolutionPhaseData;
+
+        GetClients().ForEach(c =>
+        {
+            c.Send(new EnterFreelancerResolutionPhaseNotification()
+            {
+                SubPhase = PhaseSubType,
+                RankedData = RankedResolutionPhaseData,
+            });
+        });
     }
 }

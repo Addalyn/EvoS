@@ -1,5 +1,5 @@
 {
-  "LocalizedName": "Deathmatch@SubTypes",
+  "LocalizedName": "Ranked@Global",
   "GameMapConfigs": [
     {
       "Map": "Skyway_Deathmatch",
@@ -30,8 +30,8 @@
       "IsActive": true
     }
   ],
-  "TeamAPlayers": 4,
-  "TeamBPlayers": 4,
+  "TeamAPlayers": 1,
+  "TeamBPlayers": 1,
   "TeamABots": 0,
   "TeamBBots": 0,
   "TeamComposition": {
@@ -55,8 +55,6 @@
   "RewardBucket": "NoRewards",
   "PersistedStatBucket": "DoNotPersist",
   "Mods": [
-    "AllowPlayingLockedCharacters",
-    "HumansHaveFirstSlots",
     "RankedFreelancerSelection"
   ],
   "GameOverrides": {

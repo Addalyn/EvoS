@@ -5,16 +5,17 @@ using EvoS.Framework.Network.Static;
 using Newtonsoft.Json;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 
 namespace CentralServer.LobbyServer.Gamemode
 {
     class GameModeManager
     {
         private const string ConfigPath = @"Config/GameSubTypes/";
-        private static readonly Dictionary<GameType, string> ConfigFiles = new Dictionary<GameType, string>()
+        private static readonly Dictionary<GameType, string[]> ConfigFiles = new Dictionary<GameType, string[]>()
         {
-            { GameType.PvP, "DeathMatch.json" },
-            { GameType.Custom, "Custom.json" }
+            { GameType.PvP, new string[] { "DeathMatch.json" } },
+            { GameType.Custom, new string[] { "Custom.json", "CustomRanked.json" } }
         };
 
         public static Dictionary<GameType, GameTypeAvailability> GetGameTypeAvailabilities()
@@ -108,10 +109,7 @@ namespace CentralServer.LobbyServer.Gamemode
             GameTypeAvailability type = new GameTypeAvailability();
             type.IsActive = LobbyConfiguration.GetGameTypePvPAvailable();
             type.MaxWillFillPerTeam = 4;
-            type.SubTypes = new List<GameSubType>()
-            {
-                LoadGameSubType(ConfigFiles[GameType.PvP])
-            };
+            type.SubTypes = ConfigFiles[GameType.PvP].Select(x => LoadGameSubType(x)).ToList();
             return type;
         }
 
@@ -145,10 +143,8 @@ namespace CentralServer.LobbyServer.Gamemode
             GameTypeAvailability type = new GameTypeAvailability();
             type.IsActive = LobbyConfiguration.GetGameTypeCustomAvailable();
             type.MaxWillFillPerTeam = 5;
-            type.SubTypes = new List<GameSubType>()
-            {
-                LoadGameSubType(ConfigFiles[GameType.Custom])
-            };
+            type.SubTypes = ConfigFiles[GameType.Custom].Select(x => LoadGameSubType(x)).ToList();
+
             return type;
         }
 

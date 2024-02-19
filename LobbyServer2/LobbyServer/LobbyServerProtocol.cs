@@ -34,7 +34,7 @@ namespace CentralServer.LobbyServer
         private Game _currentGame;
 
         public PlayerOnlineStatus Status = PlayerOnlineStatus.Online;
-        
+
         public Game CurrentGame
         {
             get => _currentGame;
@@ -104,6 +104,10 @@ namespace CentralServer.LobbyServer
             RegisterHandler<SetDevTagRequest>(HandleSetDevTagRequest);
             RegisterHandler<DEBUG_AdminSlashCommandNotification>(HandleDEBUG_AdminSlashCommandNotification);
             RegisterHandler<SelectRibbonRequest>(HandleSelectRibbonRequest);
+            RegisterHandler<RankedBanRequest>(HandleRankedBanRequest);
+            RegisterHandler<RankedHoverClickRequest>(HandleRankedHoverClickRequest);
+            RegisterHandler<RankedTradeRequest>(HandleRankedTradeRequest);
+            RegisterHandler<RankedSelectionRequest>(HandleRankedSelectionRequest);
 
             RegisterHandler<PurchaseModRequest>(HandlePurchaseModRequest);
             RegisterHandler<PurchaseTauntRequest>(HandlePurchaseTauntRequest);
@@ -135,12 +139,213 @@ namespace CentralServer.LobbyServer
             RegisterHandler<FriendUpdateRequest>(HandleFriendUpdate);
         }
 
+        private void HandleRankedSelectionRequest(RankedSelectionRequest request)
+        {
+            log.Info("HandleRankedSelectionRequest " + request.Selection);
+
+            Game game = GameManager.GetGameWithPlayer(AccountId, true);
+
+            if (game == null || game.Server == null)
+            {
+                Send(new RankedSelectionResponse() { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            LobbyServerPlayerInfo playerInfo = game.GetPlayerInfo(AccountId);
+
+            if (playerInfo == null)
+            {
+                // no longer in a game
+                Send(new RankedSelectionResponse { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            Send(new RankedSelectionResponse { ResponseId = request.RequestId, Success = true });
+
+            RankedResolutionPhaseData rankedResolutionPhaseData = game.GetRankedResolutionPhaseData();
+            FreelancerResolutionPhaseSubType freelancerResolutionPhaseSubType = game.GetRankedResolutionPhaseSubType();
+
+            switch (freelancerResolutionPhaseSubType)
+            {
+                case FreelancerResolutionPhaseSubType.PICK_FREELANCER1:
+                case FreelancerResolutionPhaseSubType.PICK_FREELANCER2:
+                    rankedResolutionPhaseData.PlayersOnDeck = rankedResolutionPhaseData.PlayersOnDeck.Select(p =>
+                            p.PlayerId == playerInfo.PlayerId
+                                ? new RankedResolutionPlayerState
+                                {
+                                    PlayerId = p.PlayerId,
+                                    Intention = request.Selection,
+                                    OnDeckness = RankedResolutionPlayerState.ReadyState.Unselected
+                                }
+                                : p
+                        ).ToList();
+
+                    // remove player from UnselectedPlayerStates
+                    rankedResolutionPhaseData.UnselectedPlayerStates.RemoveAll(p => p.PlayerId == playerInfo.PlayerId);
+
+                    PersistedAccountData account = DB.Get().AccountDao.GetAccount(AccountId);
+
+                    game.UpdateCharacterInfo(AccountId, LobbyCharacterInfo.Of(account.CharacterData[request.Selection]), new LobbyPlayerInfoUpdate
+                    {
+                        PlayerId = playerInfo.PlayerId,
+                        ContextualReadyState = new()
+                        {
+                            ReadyState = ReadyState.Ready,
+                        },
+                        CharacterType = request.Selection
+                    });
+
+                    if (playerInfo.TeamId == Team.TeamA)
+                    {
+                        rankedResolutionPhaseData.FriendlyTeamSelections.Add(playerInfo.PlayerId, request.Selection);
+
+                    }
+                    else
+                    {
+                        rankedResolutionPhaseData.EnemyTeamSelections.Add(playerInfo.PlayerId, request.Selection);
+                    }
+                    break;
+            }
+            game.SetRankedResolutionPhaseData(rankedResolutionPhaseData);
+            game.SendRankedResolutionSubPhase();
+
+            if (freelancerResolutionPhaseSubType == FreelancerResolutionPhaseSubType.PICK_FREELANCER2)
+            {
+                bool bothPlayersSelected = rankedResolutionPhaseData.PlayersOnDeck
+                    .All(p => p.OnDeckness == RankedResolutionPlayerState.ReadyState.Unselected);
+
+                if (bothPlayersSelected)
+                {
+                    // Skip only when both players locked in (Unselected state)
+                    game.SkipRankedResolutionSubPhase();
+                }
+            }
+            else
+            {
+                // Skip to the next phase after locking in
+                game.SkipRankedResolutionSubPhase();
+            }
+
+        }
+
+        private void HandleRankedTradeRequest(RankedTradeRequest request)
+        {
+            log.Info("HandleRankedTradeRequest " + request.Trade);
+        }
+
+        private void HandleRankedHoverClickRequest(RankedHoverClickRequest request)
+        {
+            log.Info("HandleRankedHoverClickRequest1 " + request.Selection);
+
+            Game game = GameManager.GetGameWithPlayer(AccountId, true);
+
+            if (game == null || game.Server == null)
+            {
+                Send(new RankedHoverClickResponse() { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            LobbyServerPlayerInfo playerInfo = game.GetPlayerInfo(AccountId);
+
+            if (playerInfo == null)
+            {
+                // no longer in a game
+                Send(new RankedHoverClickResponse { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            RankedResolutionPhaseData rankedResolutionPhaseData = game.GetRankedResolutionPhaseData();
+
+            rankedResolutionPhaseData.PlayersOnDeck = rankedResolutionPhaseData.PlayersOnDeck.Select(p =>
+                p.PlayerId == playerInfo.PlayerId && p.OnDeckness == RankedResolutionPlayerState.ReadyState.Selected
+                    ? new RankedResolutionPlayerState
+                    {
+                        PlayerId = p.PlayerId,
+                        Intention = request.Selection,
+                        OnDeckness = p.OnDeckness
+                    }
+                    : p
+            ).ToList();
+
+            // They have no charachter selected so they can still do Intention
+            if (rankedResolutionPhaseData.UnselectedPlayerStates.Where(p => p.PlayerId == playerInfo.PlayerId).Any())
+            {
+                rankedResolutionPhaseData.UnselectedPlayerStates = rankedResolutionPhaseData.UnselectedPlayerStates.Select(p =>
+                   p.PlayerId == playerInfo.PlayerId
+                       ? new RankedResolutionPlayerState
+                       {
+                           PlayerId = p.PlayerId,
+                           Intention = request.Selection,
+                           OnDeckness = p.OnDeckness
+                       }
+                       : p
+                ).ToList();
+            }
+            game.SetRankedResolutionPhaseData(rankedResolutionPhaseData);
+            game.SendRankedResolutionSubPhase();
+
+            Send(new RankedHoverClickResponse { ResponseId = request.RequestId, Success = true });
+        }
+
+        private void HandleRankedBanRequest(RankedBanRequest request)
+        {
+            log.Info("HandleRankedBanRequest " + request.Selection);
+
+            Game game = GameManager.GetGameWithPlayer(AccountId, true);
+
+            if (game == null || game.Server == null)
+            {
+                Send(new RankedBanResponse() { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            LobbyServerPlayerInfo playerInfo = game.GetPlayerInfo(AccountId);
+            if (playerInfo == null)
+            {
+                // no longer in a game
+                Send(new RankedBanResponse { ResponseId = request.RequestId, Success = false });
+                // todo kick them out of the game
+                return;
+            }
+
+            Send(new RankedBanResponse { ResponseId = request.RequestId, Success = true });
+
+            RankedResolutionPhaseData rankedResolutionPhaseData = game.GetRankedResolutionPhaseData();
+            FreelancerResolutionPhaseSubType freelancerResolutionPhaseSubType = game.GetRankedResolutionPhaseSubType();
+
+            switch (freelancerResolutionPhaseSubType)
+            {
+                case FreelancerResolutionPhaseSubType.PICK_BANS1:
+                case FreelancerResolutionPhaseSubType.PICK_BANS2:
+                    if (playerInfo.TeamId == Team.TeamA)
+                    {
+                        rankedResolutionPhaseData.FriendlyBans.Add(request.Selection);
+                    }
+                    else
+                    {
+                        rankedResolutionPhaseData.EnemyBans.Add(request.Selection);
+                    }
+                    break;
+            }
+
+            game.SetRankedResolutionPhaseData(rankedResolutionPhaseData);
+            game.SendRankedResolutionSubPhase();
+
+            // skip to next phase after locking in
+            game.SkipRankedResolutionSubPhase();
+        }
+
         private void HandleSelectRibbonRequest(SelectRibbonRequest request)
         {
             PersistedAccountData account = DB.Get().AccountDao.GetAccount(AccountId);
 
             if (account == null || !(account.AccountComponent.UnlockedRibbonIDs.Contains(request.RibbonID) || request.RibbonID == -1))
-            { 
+            {
                 Send(new SelectRibbonResponse()
                 {
                     Success = false,
@@ -179,7 +384,7 @@ namespace CentralServer.LobbyServer
                     switch (notification.Command)
                     {
                         case "End Game (Win)":
-                            
+
                             game.Server.AdminShutdown(team == Team.TeamA ? GameResult.TeamAWon : GameResult.TeamBWon);
                             break;
                         case "End Game (Loss)":
@@ -209,10 +414,11 @@ namespace CentralServer.LobbyServer
             if (account.AccountComponent.AppliedEntitlements.ContainsKey("DEVELOPER_ACCESS"))
             {
                 account.AccountComponent.DisplayDevTag = request.active;
-                Send(new SetDevTagResponse() { 
+                Send(new SetDevTagResponse()
+                {
                     Success = true,
                 });
-            } 
+            }
             else
             {
                 Send(new SetDevTagResponse()
@@ -251,14 +457,14 @@ namespace CentralServer.LobbyServer
                 });
                 return;
             }
-            
+
             JoinGame(game);
             Send(new JoinGameResponse
             {
                 ResponseId = joinGameRequest.RequestId
             });
         }
-        
+
         private void HandleGameInfoUpdateRequest(GameInfoUpdateRequest gameInfoUpdateRequest)
         {
             bool success = CustomGameManager.UpdateGameInfo(AccountId, gameInfoUpdateRequest.GameInfo, gameInfoUpdateRequest.TeamInfo);
@@ -272,7 +478,7 @@ namespace CentralServer.LobbyServer
                 TeamInfo = LobbyTeamInfo.FromServer(game?.TeamInfo, 0, new MatchmakingQueueConfig()),
             });
         }
-        
+
         private void HandleCreateGameRequest(CreateGameRequest createGameRequest)
         {
             ResetReadyState();
@@ -305,13 +511,13 @@ namespace CentralServer.LobbyServer
             // ServerManager.GetServerWithPlayer(AccountId)?.DisconnectPlayer(AccountId);
 
             SessionManager.OnPlayerDisconnect(this);
-            
+
             if (!SessionCleaned)
             {
                 SessionCleaned = true;
                 GroupManager.LeaveGroup(AccountId, false);
             }
-            
+
             BroadcastRefreshFriendList();
         }
 
@@ -342,7 +548,7 @@ namespace CentralServer.LobbyServer
 
             CurrentGame = null;
             log.Info($"{LobbyServerUtils.GetHandle(AccountId)} leaves {game.ProcessCode}");
-            
+
             // forcing catalyst panel update -- otherwise it would show catas for the character from the last game
             Send(new ForcedCharacterChangeFromServerNotification
             {
@@ -514,7 +720,7 @@ namespace CentralServer.LobbyServer
                 {
                     LobbyServerProtocol conn = SessionManager.GetClientConnection(groupMember.AccountID);
                     conn?.SendSystemMessage(LocalizationPayload.Create(
-                        "MemberKickedFromGroup", 
+                        "MemberKickedFromGroup",
                         "Group",
                         LocalizationArg_Handle.Create(request.MemberName)));
                 }
@@ -643,7 +849,7 @@ namespace CentralServer.LobbyServer
                 account = DB.Get().AccountDao.GetAccount(AccountId);
                 playerInfo = LobbyServerPlayerInfo.Of(account);
             }
-            
+
             // TODO validate what player has purchased
 
             // building character info to validate it for current game
@@ -688,7 +894,7 @@ namespace CentralServer.LobbyServer
                     account.AccountComponent.LastCharacter = update.CharacterType.Value;
                 }
                 account.CharacterData[characterType].CharacterComponent = characterComponent;
-                DB.Get().AccountDao.UpdateAccount(account); 
+                DB.Get().AccountDao.UpdateAccount(account);
 
                 if (request.GameType != null && request.GameType.HasValue)
                 {
@@ -728,7 +934,7 @@ namespace CentralServer.LobbyServer
                 ResponseId = request.RequestId
             };
             Send(response);
-            
+
             if (LobbyConfiguration.IsTrustWarEnabled())
             {
                 PersistedAccountData account = DB.Get().AccountDao.GetAccount(AccountId);
@@ -856,7 +1062,7 @@ namespace CentralServer.LobbyServer
                 SendSystemMessage(failure);
                 return;
             }
-            
+
             GroupInfo group = GroupManager.GetPlayerGroup(AccountId);
             IsReady = contextualReadyState.ReadyState == ReadyState.Ready;  // TODO can be Accepted and others
             if (group == null)
@@ -913,7 +1119,7 @@ namespace CentralServer.LobbyServer
                 LocalizationPayload failure = QueuePenaltyManager.CheckQueuePenalties(AccountId, SelectedGameType);
                 if (failure is not null)
                 {
-                    Send(new JoinMatchmakingQueueResponse { Success = false, ResponseId = request.RequestId, LocalizedFailure = failure});
+                    Send(new JoinMatchmakingQueueResponse { Success = false, ResponseId = request.RequestId, LocalizedFailure = failure });
                     return;
                 }
 
@@ -1623,7 +1829,7 @@ namespace CentralServer.LobbyServer
             }
 
             log.Info($"{UserName} wants to reconnect to game {request.PreviousGameInfo.GameServerProcessCode}");
-            
+
             Game game = GameManager.GetGameWithPlayer(AccountId);
 
             if (game == null || game.Server == null || !game.Server.IsConnected)
@@ -1724,58 +1930,58 @@ namespace CentralServer.LobbyServer
             switch (request.FriendOperation)
             {
                 case FriendOperation.Block:
-                {
-                    bool updated = account.SocialComponent.Block(friendAccountId);
-                    log.Info($"{account.Handle} blocked {friendAccount.Handle}{(updated ? "" : ", but they were already blocked")}");
-                    if (updated)
                     {
-                        DB.Get().AccountDao.UpdateAccount(account);
+                        bool updated = account.SocialComponent.Block(friendAccountId);
+                        log.Info($"{account.Handle} blocked {friendAccount.Handle}{(updated ? "" : ", but they were already blocked")}");
+                        if (updated)
+                        {
+                            DB.Get().AccountDao.UpdateAccount(account);
+                            Send(FriendUpdateResponse.of(request));
+                            RefreshFriendList();
+                        }
+                        else
+                        {
+                            Send(FriendUpdateResponse.of(
+                                request,
+                                LocalizationPayload.Create("FailedFriendBlock", "FriendList",
+                                    LocalizationArg_LocalizationPayload.Create(
+                                        LocalizationPayload.Create("PlayerAlreadyBlocked", "FriendUpdateResponse",
+                                            LocalizationArg_Handle.Create(request.FriendHandle))))
+                            ));
+                        }
+                        return;
+                    }
+                case FriendOperation.Unblock:
+                    {
+                        bool updated = account.SocialComponent.Unblock(friendAccountId);
+                        log.Info($"{account.Handle} unblocked {friendAccount.Handle}{(updated ? "" : ", but they weren't blocked")}");
+                        if (updated)
+                        {
+                            DB.Get().AccountDao.UpdateAccount(account);
+                        }
+
                         Send(FriendUpdateResponse.of(request));
                         RefreshFriendList();
+                        return;
                     }
-                    else
-                    {
-                        Send(FriendUpdateResponse.of(
-                            request, 
-                            LocalizationPayload.Create("FailedFriendBlock", "FriendList",
-                                LocalizationArg_LocalizationPayload.Create(
-                                    LocalizationPayload.Create("PlayerAlreadyBlocked", "FriendUpdateResponse",
-                                        LocalizationArg_Handle.Create(request.FriendHandle))))
-                        ));
-                    }
-                    return;
-                }
-                case FriendOperation.Unblock:
-                {
-                    bool updated = account.SocialComponent.Unblock(friendAccountId);
-                    log.Info($"{account.Handle} unblocked {friendAccount.Handle}{(updated ? "" : ", but they weren't blocked")}");
-                    if (updated)
-                    {
-                        DB.Get().AccountDao.UpdateAccount(account);
-                    }
-
-                    Send(FriendUpdateResponse.of(request));
-                    RefreshFriendList();
-                    return;
-                }
                 case FriendOperation.Remove:
-                {
-                    if (account.SocialComponent.IsBlocked(friendAccountId))
                     {
-                        goto case FriendOperation.Unblock;
+                        if (account.SocialComponent.IsBlocked(friendAccountId))
+                        {
+                            goto case FriendOperation.Unblock;
+                        }
+                        else
+                        {
+                            goto default;
+                        }
                     }
-                    else
-                    {
-                        goto default;
-                    }
-                }
                 default:
-                {
-                    log.Warn($"{account.Handle} attempted to {request.FriendOperation} {friendAccount.Handle}, " +
-                             $"but this operation is not supported yet");
-                    Send(FriendUpdateResponse.of(request, LocalizationPayload.Create("ServerError@Global")));
-                    return;
-                }
+                    {
+                        log.Warn($"{account.Handle} attempted to {request.FriendOperation} {friendAccount.Handle}, " +
+                                 $"but this operation is not supported yet");
+                        Send(FriendUpdateResponse.of(request, LocalizationPayload.Create("ServerError@Global")));
+                        return;
+                    }
             }
         }
     }

@@ -63,12 +63,12 @@ public class GameManager
         return success;
     }
 
-    public static Game GetGameWithPlayer(long accountId)
+    public static Game GetGameWithPlayer(long accountId,bool skipCheck = false)
     {
         foreach (Game game in Games.Values)
         {
-            if (game.GameStatus is >= GameStatus.Launched and < GameStatus.Stopped
-                && game.Server is { IsConnected: true })
+            if ((game.GameStatus is >= GameStatus.Launched and < GameStatus.Stopped
+                && game.Server is { IsConnected: true }) || skipCheck)
             {
                 foreach (long player in game.GetPlayers())
                 {
